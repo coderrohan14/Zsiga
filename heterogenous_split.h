@@ -1,8 +1,8 @@
 #include <iostream>
 #include <vector>
-#include <numeric>
 #include <algorithm>
 #include <cmath>
+#include <numeric>
 
 struct NodeCapabilities {
     float cpu;      // CPU capability in MHz
@@ -26,7 +26,7 @@ public:
     float bandwidth_weight;
 
     HeterogenousSplitter(const std::vector<NodeCapabilities>& node_capabilities,
-             float cpu_weight = 1.0, float memory_weight = 1.0, float bandwidth_weight = 1.0)
+                         float cpu_weight = 1.0, float memory_weight = 1.0, float bandwidth_weight = 1.0)
     : num_procs(node_capabilities.size()), node_capabilities(node_capabilities),
       cpu_weight(cpu_weight), memory_weight(memory_weight), bandwidth_weight(bandwidth_weight) {
         calculateTotalPower();
@@ -34,10 +34,10 @@ public:
     }
 
     void calculateTotalPower() {
-        total_power = 0;
-        for (const auto& nc : node_capabilities) {
-            total_power += nc.weighted_sum(cpu_weight, memory_weight, bandwidth_weight);
-        }
+        total_power = std::accumulate(node_capabilities.begin(), node_capabilities.end(), 0.0f,
+                                      [this](float sum, const NodeCapabilities& nc) {
+                                          return sum + nc.weighted_sum(cpu_weight, memory_weight, bandwidth_weight);
+                                      });
     }
 
     void calculateCumulativeRatios() {
@@ -50,32 +50,8 @@ public:
     }
 
     int get_pid_for_node(int node) {
-        float position = (node % num_procs) / static_cast<float>(num_procs);
+        float position = static_cast<float>(node) / static_cast<float>(num_procs);
         auto it = std::lower_bound(cumulative_ratios.begin(), cumulative_ratios.end(), position);
         return std::distance(cumulative_ratios.begin(), it);
     }
 };
-
-// Usage:
-// int main() {
-//     std::vector<NodeCapabilities> node_capabilities = {
-//         {2.0, 8.0, 10.0},  // Node 1 capabilities
-//         {2.5, 16.0, 8.0},  // Node 2 capabilities
-//         {3.0, 32.0, 12.0}, // Node 3 capabilities
-//         {1.5, 4.0, 6.0},   // Node 4 capabilities
-//         {4.0, 64.0, 14.0}, // Node 5 capabilities
-//         {3.5, 48.0, 10.0}, // Node 6 capabilities
-//         {2.8, 16.0, 7.0},  // Node 7 capabilities
-//         {2.2, 8.0, 9.0},   // Node 8 capabilities
-//         {1.8, 12.0, 5.0},  // Node 9 capabilities
-//         {2.7, 24.0, 11.0}  // Node 10 capabilities
-//     };
-    
-//     Splitter splitter(node_capabilities, 1.0, 1.0, 1.0); // Equal weights for CPU, memory, and bandwidth
-
-//     for (int node = 0; node < 20; ++node) {
-//         std::cout << "Node " << node << " is assigned to processor " << splitter.get_pid_for_node(node) << std::endl;
-//     }
-
-//     return 0;
-// }
