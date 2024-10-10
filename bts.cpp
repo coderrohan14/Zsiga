@@ -1,10 +1,27 @@
 #include <mpi.h>
+#include <cstdlib>
 #include <stdlib.h>
 #include <thread>
 #include <iostream>
 #include <chrono>
 #include <sys/resource.h>
 #include "rem_bts.h"
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/sysinfo.h>
+#include <unistd.h>
+#include <fstream>
+#include <cstring>
+#include <string>
+#include <array>
+#include <memory>
+#include <stdexcept>
+#include <sstream>
+#include <map>
+#include <vector>
+#include <unistd.h>
+#include <regex>
+#include <iomanip>
 
 #include "MessageManager.h"
 #include "ska/flat_hash_map.hpp"
@@ -21,6 +38,7 @@ Edge* recv_buffer = new Edge[recv_buffer_size];
 typedef ska::flat_hash_map<int, int> hash_t;
 
 MPI_Datatype dt_edge;
+extern char **environ;
 
 
 void receiver(int num_procs, MessageManager* msgmng, RemBTS* rembts, size_t* total_received_size){
@@ -73,14 +91,17 @@ void simply_emitting(int pid, int num_edges, int num_procs, MessageManager* msgm
     }
 }
 
-void initialization_step(int pid, int num_nodes, int num_edges, int num_procs, Edge* emit_buffer, int emit_buffer_size, MessageManager* msgmng, FILE* f, Splitter* splitter){
+void initialization_step(int pid, int num_nodes, int num_edges, int num_procs, Edge* emit_buffer, int emit_buffer_size, MessageManager* msgmng, FILE* f, HeterogeneousSplitter* splitter){
+
+    //  std::cout << "Process " << pid << " Inside initialization  step." << std::endl;
 
     RemInit* reminit = new RemInit(num_nodes, num_procs, splitter);
+
 
     size_t num_read_edges = 0;
     for(int i=0; i<num_edges;){
         while(reminit->p.size() + read_buffer_size <= emit_buffer_size && i < num_edges){
-            num_read_edges = num_edges - i < read_buffer_size ? num_edges - i : read_buffer_size;
+            num_read_edges = num_edges - i < read_buffer_size ? num_edges - i : read_buffer_size;            
             num_read_edges = fread(read_buffer, sizeof(Edge), num_read_edges, f);
             for(int j=0; j<num_read_edges; j++){
                 reminit->merge(read_buffer[j].u, read_buffer[j].v);
@@ -112,37 +133,97 @@ void initialization_step(int pid, int num_nodes, int num_edges, int num_procs, E
     delete reminit;
 }
 
-FILE* open_and_seek(char* input, int pid, int num_procs, long& num_edges, int num_slow_procs, float power_ratio) {
+FILE* open_and_seek(char* input, int pid, int num_procs, long& num_edges, HeterogeneousSplitter* splitter) {
     FILE* f = fopen(input, "rb");
     fseek(f, 0, SEEK_END);
 
-    int num_normal_procs = num_procs - num_slow_procs;
-
     long num_total_edges = ftell(f) / sizeof(Edge);
-    long reduced_edges = ceil((num_total_edges) / ((num_normal_procs*power_ratio) + num_slow_procs));
-    long increased_edges = ceil(reduced_edges*power_ratio);
+    std::vector<long> edge_counts(num_procs);
 
-    long edge_start, pos_start;
-    if (pid<num_normal_procs) {
-        edge_start = increased_edges*pid;
-        pos_start = edge_start * sizeof(Edge);
-        num_edges = increased_edges;
+    // Calculate the number of edges for each process based on their capabilities
+    for (int i = 0; i < num_procs; ++i) {
+        float ratio = splitter->node_capabilities[i].weighted_sum(splitter->cpu_weight, splitter->memory_weight, splitter->bandwidth_weight) / splitter->total_power;
+        edge_counts[i] = std::ceil(num_total_edges * ratio);
     }
-    else {
-        edge_start = (increased_edges*num_normal_procs) + (reduced_edges*(pid-num_normal_procs));
-        pos_start = (edge_start) * sizeof(Edge);
-        num_edges = reduced_edges;
+
+    // Adjust edge counts to ensure the total matches num_total_edges
+    long total_assigned = std::accumulate(edge_counts.begin(), edge_counts.end(), 0L);
+    int i = 0;
+    while (total_assigned > num_total_edges) {
+        if (edge_counts[i] > 0) {
+            edge_counts[i]--;
+            total_assigned--;
+        }
+        i = (i + 1) % num_procs;
     }
-    num_edges = ((edge_start+num_edges) < num_total_edges) ? (num_edges):(num_total_edges-edge_start);
+
+    // Calculate the starting position for this process
+    long edge_start = 0;
+    for (int i = 0; i < pid; ++i) {
+        edge_start += edge_counts[i];
+    }
+
+    long pos_start = edge_start * sizeof(Edge);
+    num_edges = edge_counts[pid];
+
     fseek(f, pos_start, SEEK_SET);
 
     fprintf(stderr, "(%d/%d) num_total_edges: %ld, pos_start: %ld, num_edges: %ld\n", pid, num_procs, num_total_edges, pos_start, num_edges);
     return f;
 }
 
-int main(int argc, char** argv){
+// Function to read a value from a file
+std::string readFile(const std::string& filePath) {
+    std::ifstream file(filePath);
+    if (!file) {
+        std::cerr << "Error: Cannot open file " << filePath << std::endl;
+        return "";
+    }
+    std::string value;
+    std::getline(file, value);
+    return value;
+}
 
-    fprintf(stderr, "Testing code!!");
+std::string exec(const char* cmd) {
+    std::array<char, 128> buffer;
+    std::string result;
+    std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(cmd, "r"), pclose);
+    if (!pipe) {
+        throw std::runtime_error("popen() failed!");
+    }
+    while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
+        result += buffer.data();
+    }
+    return result;
+}
+
+std::string getBandwidthLimit() {
+    std::string tc_output = exec("sudo tc class show dev $(ip -o -4 route show to default | awk '{print $5}')");
+    std::regex rate_regex("rate ([0-9.]+[KMG]?bit)");
+    std::smatch match;
+    if (std::regex_search(tc_output, match, rate_regex)) {
+        return match[1];
+    }
+    return "No limit set or unable to retrieve";
+}
+
+// Function to get CPU frequency
+double getCPUFrequencyMHz() {
+    std::ifstream cpuinfo("/proc/cpuinfo");
+    std::string line;
+    while (std::getline(cpuinfo, line)) {
+        if (line.substr(0, 7) == "cpu MHz") {
+            std::istringstream iss(line.substr(line.find(":") + 1));
+            double value;
+            if (iss >> value) {
+                return value;
+            }
+        }
+    }
+    return 0.0;  // Return 0 if unable to find CPU frequency
+}
+
+int main(int argc, char** argv){
 
     auto start = high_resolution_clock::now();
 
@@ -153,30 +234,124 @@ int main(int argc, char** argv){
     MPI_Type_contiguous(2, MPI_INT, &dt_edge);
     MPI_Type_commit(&dt_edge);
 
+     // Paths to cgroup files
+    std::string cpuMaxFile = "/sys/fs/cgroup/mpi_limits/cpu.max";
+    std::string memMaxFile = "/sys/fs/cgroup/mpi_limits/memory.max";
+
+    // Read CPU limit
+    double limitedCPUFrequency = 0.0;
+    std::string cpuMax = readFile(cpuMaxFile);
+    if (!cpuMax.empty()) {
+        std::istringstream cpuStream(cpuMax);
+        long long cpuLimit, cpuPeriod;
+        cpuStream >> cpuLimit >> cpuPeriod;
+        double cpuPercentage = (double)cpuLimit / cpuPeriod;
+        
+        double totalCPUFrequency = getCPUFrequencyMHz();
+        limitedCPUFrequency = totalCPUFrequency * cpuPercentage;
+        
+        std::cout << "Process " << pid << " - CPU Limit: " << std::fixed << std::setprecision(2) 
+                  << limitedCPUFrequency << " MHz" << std::endl;
+    }
+
+    // Read Memory limit
+    float memLimitMB = 0.0f;
+    std::string memMax = readFile(memMaxFile);
+    if (!memMax.empty()) {
+        long long memLimitBytes = std::stoll(memMax);
+        memLimitMB = static_cast<float>(memLimitBytes) / (1024 * 1024); // Convert to MB
+        std::cout << "Process " << pid << " - Memory Limit (in MB): " << memLimitMB << std::endl;
+    }
+
+    // Get Bandwidth limit
+    float bwLimitMBps = 0.0f;
+    std::string bwLimit = getBandwidthLimit();
+    if (bwLimit != "No limit set or unable to retrieve") {
+        std::string numPart = bwLimit.substr(0, bwLimit.find("Mbit"));
+        bwLimitMBps = std::stof(numPart) / 8.0f; // Convert Mbit/s to MByte/s
+        std::cout << "Process " << pid << " - Bandwidth Limit (in MBps): " << bwLimitMBps << std::endl;
+    }
+
+    // Collect resource information from all nodes
+    NodeCapabilities localCapabilities = {
+        static_cast<float>(limitedCPUFrequency),
+        memLimitMB,
+        bwLimitMBps
+    };
+
+    // Define a buffer size that's large enough to hold the NodeCapabilities data
+const int BUFFER_SIZE = sizeof(float) * 3; // Adjust if needed
+
+// Create send and receive buffers
+char sendBuffer[BUFFER_SIZE];
+std::vector<char> recvBuffer(BUFFER_SIZE * num_procs);
+
+// Pack the data
+int position = 0;
+MPI_Pack(&localCapabilities.cpu, 1, MPI_FLOAT, sendBuffer, BUFFER_SIZE, &position, MPI_COMM_WORLD);
+MPI_Pack(&localCapabilities.memory, 1, MPI_FLOAT, sendBuffer, BUFFER_SIZE, &position, MPI_COMM_WORLD);
+MPI_Pack(&localCapabilities.bandwidth, 1, MPI_FLOAT, sendBuffer, BUFFER_SIZE, &position, MPI_COMM_WORLD);
+
+// Gather the data
+MPI_Allgather(sendBuffer, BUFFER_SIZE, MPI_PACKED, recvBuffer.data(), BUFFER_SIZE, MPI_PACKED, MPI_COMM_WORLD);
+
+// Unpack the data
+std::vector<NodeCapabilities> allCapabilities(num_procs);
+for (int i = 0; i < num_procs; ++i) {
+    position = i * BUFFER_SIZE;
+    MPI_Unpack(recvBuffer.data(), recvBuffer.size(), &position, &allCapabilities[i].cpu, 1, MPI_FLOAT, MPI_COMM_WORLD);
+    MPI_Unpack(recvBuffer.data(), recvBuffer.size(), &position, &allCapabilities[i].memory, 1, MPI_FLOAT, MPI_COMM_WORLD);
+    MPI_Unpack(recvBuffer.data(), recvBuffer.size(), &position, &allCapabilities[i].bandwidth, 1, MPI_FLOAT, MPI_COMM_WORLD);
+}
+
+
+
     char* input = argv[1];
     int num_nodes = strtol(argv[2], NULL, 10);
     fprintf(stderr, "(%d/%d) num_nodes: %d\n", pid, num_procs, num_nodes);
 
-    int num_slow_procs = 3;
-    float power_ratio = 2;
-    Splitter* splitter = new Splitter(power_ratio, num_procs, num_slow_procs);
+    // Initialize HeterogeneousSplitter with the collected capabilities
+    HeterogeneousSplitter* splitter = new HeterogeneousSplitter(allCapabilities, num_nodes);
+
+    // if(pid == 0){
+    //     std::cout << "Node Distribution: ";
+    //     for(int i = 0; i < num_nodes; ++i) {
+    //         std::cout << splitter->get_pid_for_node(i) << " ";
+    //     }
+    //     std::cout << std::endl;
+    // }
     
     MessageManager* msgmng = new MessageManager(num_procs, dt_edge);
-    RemBTS* rembts = new RemBTS(num_nodes, pid, num_procs, splitter);
+    RemBTS* rembts = new RemBTS(num_nodes, pid, splitter);
     size_t total_communication, total_received_size;
 
-    // int emit_buffer_size = (rembts->p.num_local_nodes)*2; //Amogh: ToDo
-    int emit_buffer_size = ceil(num_nodes/(splitter->mod))*power_ratio;
-    if(emit_buffer_size < read_buffer_size)
+    std::vector<int> node_distribution = splitter->getNodeDistribution();
+    
+    // Calculate the emit buffer size based on the distribution
+    int emit_buffer_size = node_distribution[pid] * 2;  
+
+    // Ensure the buffer size is at least as large as read_buffer_size
+    if (emit_buffer_size < read_buffer_size) {
         emit_buffer_size = read_buffer_size;
+    }
+
+    std::cout << "Emit Buffer Size: " << emit_buffer_size << std::endl;
+    
     Edge* emit_buffer = new Edge[emit_buffer_size];
 
     long num_edges;
 
-    FILE* f = open_and_seek(input, pid, num_procs, num_edges, num_slow_procs, power_ratio);
+    // Before open_and_seek
+// std::cout << "Process " << pid << " - About to call open_and_seek" << std::endl;
+
+    FILE* f = open_and_seek(input, pid, num_procs, num_edges, splitter);
+
+    // After open_and_seek
+    // std::cout << "Process " << pid << " - open_and_seek completed" << std::endl;
     thread recv_thread(receiver, num_procs, msgmng, rembts, &total_received_size);
     // simply_emitting(pid, num_edges, num_procs, msgmng, f);
     initialization_step(pid, num_nodes, num_edges, num_procs, emit_buffer, emit_buffer_size, msgmng, f, splitter);
+    // std::cout << "Process " << pid << "initialization  step completed" << std::endl;
     fclose(f);
 
     milliseconds elapsed_ms = duration_cast<milliseconds>(high_resolution_clock::now()-start);

@@ -1,58 +1,62 @@
-#include <iostream>
+#include "ska/flat_hash_map.hpp"
+#include "heterogenous_split.h" 
 #include <vector>
-#include <unordered_map>
-#include "heterogenous_split.h"
+
+typedef ska::flat_hash_map<int, int> hash_t;
 
 class HybridMap {
 public:
+    int pid;
+    int num_procs;
     int num_nodes;
-    int pid; // Processor ID
-    HeterogenousSplitter* splitter;
+    int num_local_nodes;  // Adding this to store the number of local nodes
+    int* p_in;  // Array for storing "inside" vertices
+    hash_t p_out;  // Hash table for storing "outside" vertices
+    HeterogeneousSplitter* splitter;
 
-    std::vector<int> local_nodes; // Indices of nodes that are local to this processor
-    std::unordered_map<int, int> remote_nodes; // Maps remote nodes to their local indices
-
-    HybridMap(int num_nodes, int pid, HeterogenousSplitter* splitter) : num_nodes(num_nodes), pid(pid), splitter(splitter) {
-        distributeNodes();
+    HybridMap(int num_nodes, int pid, HeterogeneousSplitter* splitter)
+    : num_nodes(num_nodes), pid(pid), num_procs(splitter->num_procs), splitter(splitter) {
+        std::vector<int> distribution = splitter->getNodeDistribution();
+        for(int i=0; i<num_procs; i++){
+            std::cout << "Process " << i << " has " << distribution[i] << " nodes." << std::endl;
+        }
+        num_local_nodes = distribution[pid];  // Assigning the number of local nodes
+        p_in = new int[num_local_nodes];
+        int global_node_id = 0;
+        for (int i = 0; i < num_local_nodes; i++) {
+            while (splitter->get_pid_for_node(global_node_id) != pid) {
+                global_node_id++;
+            }
+            p_in[i] = global_node_id;
+            // std::cout<<"Process "<<pid<<": Node "<<global_node_id<<" is local"<<std::endl;
+            global_node_id++;
+        }
     }
 
-    void distributeNodes() {
-        std::vector<int> counts(splitter->num_procs, 0);
-        int total_nodes = num_nodes;
+    ~HybridMap() {
+        delete[] p_in;  // Free the allocated memory for inside vertices
+    }
 
-        // First, distribute nodes based on the capabilities proportionally
-        for (int i = 0; i < splitter->num_procs; ++i) {
-            float proportion = splitter->node_capabilities[i].weighted_sum(splitter->cpu_weight, splitter->memory_weight, splitter->bandwidth_weight) / splitter->total_power;
-            counts[i] = static_cast<int>(proportion * total_nodes);
-            total_nodes -= counts[i];
-        }
+    int& operator[](int u) {
+        // Use the splitter to determine the processor responsible for this vertex
+        int responsible_pid = splitter->get_pid_for_node(u);
 
-        // If there are leftover nodes due to rounding, distribute them starting from the most capable processor
-        int i = 0;
-        while (total_nodes > 0) {
-            counts[i % splitter->num_procs]++;
-            total_nodes--;
-            i++;
-        }
-
-        // Now assign nodes to local or remote depending on the pid and count
-        int node_id = 0;
-        for (int proc_id = 0; proc_id < splitter->num_procs; ++proc_id) {
-            for (int j = 0; j < counts[proc_id]; ++j, ++node_id) {
-                if (proc_id == pid) {
-                    local_nodes.push_back(node_id);
-                } else {
-                    remote_nodes[node_id] = -1; // Placeholder for remote nodes
+        // If this processor is responsible, determine local index for the vertex
+        if (responsible_pid == pid) {
+            //TODO: Optimize this
+            int local_index = 0;
+            for (int i = 0; i < u; i++) {
+                if (splitter->get_pid_for_node(i) == pid) {
+                    local_index++;
                 }
             }
-        }
-    }
-
-    int& operator[](int node) {
-        if (splitter->get_pid_for_node(node) == pid) {
-            return local_nodes[node];
+            return p_in[local_index];
         } else {
-            return remote_nodes[node];
+            // If not responsible, vertex is stored in the hash table
+            if(p_out.find(u) == p_out.end()){
+                p_out[u] = u;
+            }
+            return p_out[u];
         }
     }
 };
