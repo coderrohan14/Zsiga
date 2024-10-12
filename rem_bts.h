@@ -198,9 +198,9 @@ public:
 
         ska::flat_hash_map<int, int> ucc;
 
-        std::vector<int> nodes_for_proc = splitter->getNodesForProcessor(p.pid);
+        std::pair<int, int> node_range = splitter->getNodeRangeForProcessor(p.pid);
 
-        for (int node : nodes_for_proc) {
+        for (int node=node_range.first; node<=node_range.second; node++) {
             // int u = p.p_in[i]; //parent of i th node
             int up = find(node); //global root
             if (splitter->get_pid_for_node(up) == p.pid) continue; //global root is the local root

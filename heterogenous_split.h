@@ -21,7 +21,9 @@ public:
     int total_nodes;
     std::vector<NodeCapabilities> node_capabilities;
     float total_power;
-    std::vector<float> cumulative_ratios;
+    std::vector<float> power_ratios;
+    std::vector<int> node_distribution;
+    std::vector<std::pair<int, int>> node_ranges;
     float cpu_weight;
     float memory_weight;
     float bandwidth_weight;
@@ -32,7 +34,9 @@ public:
     : num_procs(node_capabilities.size()), total_nodes(total_nodes), node_capabilities(node_capabilities),
       cpu_weight(cpu_weight), memory_weight(memory_weight), bandwidth_weight(bandwidth_weight) {
         calculateTotalPower();
-        calculateCumulativeRatios();
+        calculatePowerRatios();
+        calculateNodeDistribution();
+        calculateNodeRanges();
     }
 
     void calculateTotalPower() {
@@ -42,42 +46,62 @@ public:
         }
     }
 
-    void calculateCumulativeRatios() {
-        cumulative_ratios.resize(num_procs);
-        float sum = 0.0f;
+    void calculatePowerRatios() {
+        power_ratios.resize(num_procs);
         for (int i = 0; i < num_procs; ++i) {
-            sum += node_capabilities[i].weighted_sum(cpu_weight, memory_weight, bandwidth_weight);
-            cumulative_ratios[i] = sum / total_power;
+            power_ratios[i] = node_capabilities[i].weighted_sum(cpu_weight, memory_weight, bandwidth_weight) / total_power;
         }
     }
 
-    int get_pid_for_node(int node) {
-        float position = static_cast<float>(node) / total_nodes;
-        auto it = std::lower_bound(cumulative_ratios.begin(), cumulative_ratios.end(), position);
-        return std::distance(cumulative_ratios.begin(), it);
-    }
+    void calculateNodeDistribution() {
+        node_distribution.resize(num_procs);
+        int remaining_nodes = total_nodes;
+        int assigned_nodes = 0;
 
-    int getMaxNodesPerProcessor() {
-        std::vector<int> distribution = this->getNodeDistribution();
-        return *std::max_element(distribution.begin(), distribution.end());
-    }
-
-    std::vector<int> getNodeDistribution() {
-        std::vector<int> distribution(num_procs, 0);
-        for (int node = 0; node < total_nodes; ++node) {
-            int pid = get_pid_for_node(node);
-            distribution[pid]++;
+        for (int i = 0; i < num_procs - 1; ++i) {
+            node_distribution[i] = std::round(power_ratios[i] * total_nodes);
+            assigned_nodes += node_distribution[i];
         }
-        return distribution;
+
+        // Assign remaining nodes to the last processor
+        node_distribution[num_procs - 1] = total_nodes - assigned_nodes;
     }
 
-    std::vector<int> getNodesForProcessor(int processor_id) {
-        std::vector<int> nodes;
-        for (int node = 0; node < total_nodes; ++node) {
-            if (get_pid_for_node(node) == processor_id) {
-                nodes.push_back(node);
+    void calculateNodeRanges() {
+        node_ranges.resize(num_procs);
+        int start = 0;
+        for (int i = 0; i < num_procs; ++i) {
+            int end = start + node_distribution[i] - 1;
+            node_ranges[i] = {start, end};
+            start = end + 1;
+        }
+    }
+
+    int get_pid_for_node(int node) const {
+        if (node < 0 || node >= total_nodes) {
+            throw std::out_of_range("Node index out of range");
+        }
+
+        for (int pid = 0; pid < num_procs; ++pid) {
+            if (node >= node_ranges[pid].first && node <= node_ranges[pid].second) {
+                return pid;
             }
         }
-        return nodes;
+
+        return num_procs - 1; // Fallback to last processor
+    }
+
+    int getNodeCountForProcessor(int processor_id) const {
+        if (processor_id < 0 || processor_id >= num_procs) {
+            return 0; // Or throw an exception
+        }
+        return node_distribution[processor_id];
+    }
+
+    std::pair<int, int> getNodeRangeForProcessor(int processor_id) const {
+        if (processor_id < 0 || processor_id >= num_procs) {
+            throw std::out_of_range("Processor ID out of range");
+        }
+        return node_ranges[processor_id];
     }
 };

@@ -91,9 +91,11 @@ void simply_emitting(int pid, int num_edges, int num_procs, MessageManager* msgm
     }
 }
 
+
+// fix seg fault here
 void initialization_step(int pid, int num_nodes, int num_edges, int num_procs, Edge* emit_buffer, int emit_buffer_size, MessageManager* msgmng, FILE* f, HeterogeneousSplitter* splitter){
 
-    //  std::cout << "Process " << pid << " Inside initialization  step." << std::endl;
+    // std::cout << "Process " << pid << " Inside initialization  step." << std::endl;
 
     RemInit* reminit = new RemInit(num_nodes, num_procs, splitter);
 
@@ -132,6 +134,7 @@ void initialization_step(int pid, int num_nodes, int num_edges, int num_procs, E
     
     delete reminit;
 }
+
 
 FILE* open_and_seek(char* input, int pid, int num_procs, long& num_edges, HeterogeneousSplitter* splitter) {
     FILE* f = fopen(input, "rb");
@@ -325,17 +328,17 @@ for (int i = 0; i < num_procs; ++i) {
     RemBTS* rembts = new RemBTS(num_nodes, pid, splitter);
     size_t total_communication, total_received_size;
 
-    std::vector<int> node_distribution = splitter->getNodeDistribution();
+    // std::vector<int> node_distribution = splitter->getNodeDistribution();
     
     // Calculate the emit buffer size based on the distribution
-    int emit_buffer_size = node_distribution[pid] * 2;  
+    int emit_buffer_size = splitter->getNodeCountForProcessor(pid) * 10;  
 
     // Ensure the buffer size is at least as large as read_buffer_size
     if (emit_buffer_size < read_buffer_size) {
         emit_buffer_size = read_buffer_size;
     }
 
-    std::cout << "Emit Buffer Size: " << emit_buffer_size << std::endl;
+    // std::cout << "Emit Buffer Size: " << emit_buffer_size << std::endl;
     
     Edge* emit_buffer = new Edge[emit_buffer_size];
 
@@ -349,7 +352,6 @@ for (int i = 0; i < num_procs; ++i) {
     // After open_and_seek
     // std::cout << "Process " << pid << " - open_and_seek completed" << std::endl;
     thread recv_thread(receiver, num_procs, msgmng, rembts, &total_received_size);
-    // simply_emitting(pid, num_edges, num_procs, msgmng, f);
     initialization_step(pid, num_nodes, num_edges, num_procs, emit_buffer, emit_buffer_size, msgmng, f, splitter);
     // std::cout << "Process " << pid << "initialization  step completed" << std::endl;
     fclose(f);

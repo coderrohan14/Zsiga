@@ -13,22 +13,16 @@ public:
     int* p_in;  // Array for storing "inside" vertices
     hash_t p_out;  // Hash table for storing "outside" vertices
     HeterogeneousSplitter* splitter;
+    std::pair<int, int> node_range;
 
     HybridMap(int num_nodes, int pid, HeterogeneousSplitter* splitter)
     : num_nodes(num_nodes), pid(pid), num_procs(splitter->num_procs), splitter(splitter) {
-        std::vector<int> distribution = splitter->getNodeDistribution();
-        for(int i=0; i<num_procs; i++){
-            std::cout << "Process " << i << " has " << distribution[i] << " nodes." << std::endl;
-        }
-        num_local_nodes = distribution[pid];  // Assigning the number of local nodes
+        num_local_nodes = splitter->getNodeCountForProcessor(pid);  // Assigning the number of local nodes
         p_in = new int[num_local_nodes];
-        int global_node_id = 0;
-        for (int i = 0; i < num_local_nodes; i++) {
-            while (splitter->get_pid_for_node(global_node_id) != pid) {
-                global_node_id++;
-            }
+        node_range = splitter->getNodeRangeForProcessor(pid);
+        int global_node_id = node_range.first;
+        for(int i = 0; i < num_local_nodes; i++){
             p_in[i] = global_node_id;
-            // std::cout<<"Process "<<pid<<": Node "<<global_node_id<<" is local"<<std::endl;
             global_node_id++;
         }
     }
@@ -43,12 +37,24 @@ public:
 
         // If this processor is responsible, determine local index for the vertex
         if (responsible_pid == pid) {
-            //TODO: Optimize this
-            int local_index = 0;
-            for (int i = 0; i < u; i++) {
-                if (splitter->get_pid_for_node(i) == pid) {
-                    local_index++;
+            int local_index = -1;
+            int left = 0;
+            int right = num_local_nodes - 1;
+            while (left <= right) {
+                int mid = left + (right - left) / 2;
+                int node = node_range.first + mid;
+                if (node == u) {
+                    local_index = mid;
+                    break;
+                } else if (node < u) {
+                    left = mid + 1;
+                } else {
+                    right = mid - 1;
                 }
+            }
+            if (local_index == -1) {
+                // Handle error: u not found in the range
+                throw std::out_of_range("Node not found in local range");
             }
             return p_in[local_index];
         } else {
