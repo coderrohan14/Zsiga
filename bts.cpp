@@ -143,19 +143,24 @@ FILE* open_and_seek(char* input, int pid, int num_procs, long& num_edges, Hetero
     long num_total_edges = ftell(f) / sizeof(Edge);
     std::vector<long> edge_counts(num_procs);
 
-    // Calculate the number of edges for each process based on their capabilities
+    // Use the power_ratios from the splitter to calculate edge counts
+    long total_assigned = 0;
     for (int i = 0; i < num_procs; ++i) {
-        float ratio = splitter->node_capabilities[i].weighted_sum(splitter->cpu_weight, splitter->memory_weight, splitter->bandwidth_weight) / splitter->total_power;
-        edge_counts[i] = std::ceil(num_total_edges * ratio);
+        edge_counts[i] = std::round(num_total_edges * splitter->getPowerRatio(i));
+        total_assigned += edge_counts[i];
     }
 
-    // Adjust edge counts to ensure the total matches num_total_edges
-    long total_assigned = std::accumulate(edge_counts.begin(), edge_counts.end(), 0L);
+    // Adjust for any rounding errors
     int i = 0;
-    while (total_assigned > num_total_edges) {
-        if (edge_counts[i] > 0) {
-            edge_counts[i]--;
-            total_assigned--;
+    while (total_assigned != num_total_edges) {
+        if (total_assigned < num_total_edges) {
+            edge_counts[i]++;
+            total_assigned++;
+        } else {
+            if (edge_counts[i] > 0) {
+                edge_counts[i]--;
+                total_assigned--;
+            }
         }
         i = (i + 1) % num_procs;
     }
@@ -171,7 +176,8 @@ FILE* open_and_seek(char* input, int pid, int num_procs, long& num_edges, Hetero
 
     fseek(f, pos_start, SEEK_SET);
 
-    fprintf(stderr, "(%d/%d) num_total_edges: %ld, pos_start: %ld, num_edges: %ld\n", pid, num_procs, num_total_edges, pos_start, num_edges);
+    fprintf(stderr, "(%d/%d) num_total_edges: %ld, pos_start: %ld, num_edges: %ld, power_ratio: %f\n", 
+            pid, num_procs, num_total_edges, pos_start, num_edges, splitter->getPowerRatio(pid));
     return f;
 }
 

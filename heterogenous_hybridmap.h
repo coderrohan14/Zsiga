@@ -37,25 +37,12 @@ public:
 
         // If this processor is responsible, determine local index for the vertex
         if (responsible_pid == pid) {
-            int local_index = -1;
-            int left = 0;
-            int right = num_local_nodes - 1;
-            while (left <= right) {
-                int mid = left + (right - left) / 2;
-                int node = node_range.first + mid;
-                if (node == u) {
-                    local_index = mid;
-                    break;
-                } else if (node < u) {
-                    left = mid + 1;
-                } else {
-                    right = mid - 1;
-                }
-            }
-            if (local_index == -1) {
+            std::pair<int, int> node_range = splitter->getNodeRangeForProcessor(pid);
+            if (u<node_range.first || u>node_range.second) {
                 // Handle error: u not found in the range
                 throw std::out_of_range("Node not found in local range");
             }
+            int local_index = u - node_range.first;
             return p_in[local_index];
         } else {
             // If not responsible, vertex is stored in the hash table

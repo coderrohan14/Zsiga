@@ -30,7 +30,7 @@ public:
 
     HeterogeneousSplitter(const std::vector<NodeCapabilities>& node_capabilities,
                           int total_nodes,
-                          float cpu_weight = 1.0, float memory_weight = 1.0, float bandwidth_weight = 1.0)
+                          float cpu_weight = 1.0, float memory_weight = 0.0, float bandwidth_weight = 0.0)
     : num_procs(node_capabilities.size()), total_nodes(total_nodes), node_capabilities(node_capabilities),
       cpu_weight(cpu_weight), memory_weight(memory_weight), bandwidth_weight(bandwidth_weight) {
         calculateTotalPower();
@@ -103,5 +103,12 @@ public:
             throw std::out_of_range("Processor ID out of range");
         }
         return node_ranges[processor_id];
+    }
+
+    float getPowerRatio(int processor_id) const {
+        if (processor_id < 0 || processor_id >= num_procs) {
+            throw std::out_of_range("Processor ID out of range");
+        }
+        return power_ratios[processor_id];
     }
 };
